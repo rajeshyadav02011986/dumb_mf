@@ -64,6 +64,10 @@
 </head>
 <body>
 <div class="card">
+  <div class="pill-group" id="marketPills" style="margin-bottom:14px;">
+    <button class="pill active" id="marketNifty" style="font-size:15px; padding:8px 20px;">NIFTY</button>
+    <button class="pill" id="marketSensex" style="font-size:15px; padding:8px 20px;">SENSEX</button>
+  </div>
   <div class="filebar" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
     <span id="fileStatus" class="subnote" style="margin:0;"></span>
     <button class="pill" id="loadBtn">Load new files</button>
@@ -608,10 +612,6 @@ document.getElementById('refreshBtn').onclick=async()=>{
     fMulti.click(); // one picker, select all files together; types auto-detected
   }
 };
-document.getElementById('resetBtn').onclick=()=>{
-  try{localStorage.removeItem('bpmf_v1');}catch(e){}
-  DATA=EMBEDDED; initAll();
-};
 
 /* ---------- EOD participants tab ---------- */
 let eodDate=null;
@@ -730,15 +730,144 @@ tS.onclick=()=>showTab('tabStrike');
 tT.onclick=()=>showTab('tabTrend');
 tE.onclick=()=>showTab('tabEod');
 
-  /* ---------- Google Drive integration ---------- */
+ /* ---------- Sensex EOD transform functions ---------- */
+/* Add these alongside your existing transformPWOI / transformStats functions. */
+
+// dd/mm/yyyy strings need explicit parsing — native JS Date() assumes
+// US m/d/y format and will silently misread Indian-format dates.
+function parseDMY(v){
+  if(v==null) return null;
+  if(typeof v === 'number') return xlD(v); // just in case it's an Excel date serial
+  const s = String(v).trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m){
+    const [,d,mo,y] = m;
+    return new Date(Date.UTC(+y, +mo-1, +d));
+  }
+  const d2 = new Date(s);
+  return isNaN(d2) ? null : d2;
+}
+
+// bse_deri_Table.xlsx -> same {dates, rows:{date:{Client,DII,FII,Pro}}} shape
+// as transformPWOI, so it plugs directly into the existing stance-chart /
+// bar-chart rendering code in renderEOD().
+const BSE_CLIENT_MAP = {'CLIENT*':'Client', 'DII':'DII', 'FII':'FII', 'Proprietary':'Pro'};
+
+function transformBseOi(rows){
+  const byDate = {};
+  rows.forEach(r=>{
+    const label = BSE_CLIENT_MAP[String(r['Client Type']||'').trim()];
+    if(!label) return;
+    const d = parseDMY(r.Date); if(!d) return;
+    const k = isoD(d);
+    byDate[k] = byDate[k] || {};
+    byDate[k][label] = {
+      clD: +r['Index Options Call Long Chg']||0,
+      csD: +r['Index Options Call Short Chg']||0,
+      plD: +r['Index Options Put Long Chg']||0,
+      psD: +r['Index Options Put Short Chg']||0,
+      cl:  +r['Index Options Call Long']||0,
+      cs:  +r['Index Options Call Short']||0,
+      pl:  +r['Index Options Put Long']||0,
+      ps:  +r['Index Options Put Short']||0,
+    };
+  });
+  return {dates: Object.keys(byDate).sort().reverse(), rows: byDate};
+}
+
+// bse_fii_summary.xlsx -> same {dates, rows:{date:{net,cDiff,hold,avgB,avgS,posDiff}}}
+// shape as transformStats. Filters to the "INDEX OPTIONS" row per date
+// (equivalent to the NIFTY OPTIONS filter in the original). This file has
+// no precomputed day-over-day diff, so cDiff/posDiff are computed here from
+// consecutive dates (net = BuyContracts - SellContracts).
+function transformBseFiiStats(rows){
+  const byDate = {};
+  rows.forEach(r=>{
+    if(String(r.Details||'').trim().toUpperCase() !== 'INDEX OPTIONS') return;
+    const d = parseDMY(r.Date); if(!d) return;
+    const k = isoD(d);
+    const buy = +r.BuyContracts||0, sell = +r.SellContracts||0;
+    byDate[k] = {
+      net: buy - sell,
+      hold: +r.EodContracts||0,
+      avgB: Math.round(+r['Avg Underlying (Buy)']||0),
+      avgS: Math.round(+r['Avg Underlying (Sell)']||0),
+      _eodValue: +r.EodValue||0, // temp, used to compute posDiff below
+    };
+  });
+
+  const ascDates = Object.keys(byDate).sort();
+  let prevNet = null, prevVal = null;
+  ascDates.forEach(k=>{
+    const r = byDate[k];
+    r.cDiff = prevNet === null ? 0 : r.net - prevNet;
+    r.posDiff = prevVal === null ? 0 : Math.round(r._eodValue - prevVal);
+    prevNet = r.net; prevVal = r._eodValue;
+    delete r._eodValue;
+  });
+
+  return {dates: ascDates.slice().reverse(), rows: byDate};
+}
+
+/* ---------- Market state (Nifty / Sensex) ---------- */
+let activeMarket = 'nifty';
+
+const EMPTY_MARKET_DATA = {
+  date: 'No data loaded — tap "Load from Drive"',
+  expiries: {'—': {strikes:[0], times:['09:15'], ce:[[0]], pe:[[0]], spot:[0]}},
+  trend: {times:['09:15'], ce:[0], pe:[0]},
+  eod: {pwoi:null, stats:null},
+};
+
+// Nifty keeps your original built-in sample (EMBEDDED, defined above).
+// Sensex has no built-in sample — starts empty until loaded from Drive.
+let dataNifty = EMBEDDED;
+let dataSensex = EMPTY_MARKET_DATA;
+
+try{
+  const sN = localStorage.getItem('bpmf_v1_nifty'); if(sN) dataNifty = JSON.parse(sN);
+  const sS = localStorage.getItem('bpmf_v1_sensex'); if(sS) dataSensex = JSON.parse(sS);
+}catch(e){}
+
+function switchMarket(mkt){
+  activeMarket = mkt;
+  document.getElementById('marketNifty').classList.toggle('active', mkt==='nifty');
+  document.getElementById('marketSensex').classList.toggle('active', mkt==='sensex');
+  DATA = mkt==='nifty' ? dataNifty : dataSensex;
+  initAll();
+}
+document.getElementById('marketNifty').onclick = ()=>switchMarket('nifty');
+document.getElementById('marketSensex').onclick = ()=>switchMarket('sensex');
+
+document.getElementById('resetBtn').onclick=()=>{
+  if(activeMarket==='nifty'){
+    try{localStorage.removeItem('bpmf_v1_nifty');}catch(e){}
+    dataNifty = EMBEDDED; DATA = dataNifty;
+  }else{
+    try{localStorage.removeItem('bpmf_v1_sensex');}catch(e){}
+    dataSensex = EMPTY_MARKET_DATA; DATA = dataSensex;
+  }
+  initAll();
+};
+
+/* ---------- Google Drive integration ---------- */
 const DRIVE_CLIENT_ID = '552239939342-622ph7bgnnj0kk7b0amjbsi0hpe4kni1.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const DRIVE_LIVE_FOLDER_NAME = 'MF_Process_Live';
-const DRIVE_FILES = {
-  bp: 'mf_nifty_bp1.xlsx',   // Strike MF
-  tr: '1_nifty.xlsx',        // Index trend
-  pw: 'fii_pwoi.xlsx',       // PWOI
-  st: 'fii_stats.xlsx',      // FII stats
+
+const DRIVE_FILES_BY_MARKET = {
+  nifty: {
+    bp: 'mf_nifty_bp1.xlsx',
+    tr: '1_nifty.xlsx',
+    pw: 'fii_pwoi.xlsx',
+    st: 'fii_stats.xlsx',
+  },
+  sensex: {
+    bp: 'mf_bse30_bp1.xlsx',
+    tr: '1_bse.xlsx',
+    pw: 'bse_deri_Table.xlsx',
+    st: 'bse_fii_summary.xlsx',
+  },
 };
 
 let driveAccessToken = null;
@@ -795,35 +924,41 @@ async function driveReadRows(fileId, sheetName){
 
 async function driveLoadAll(){
   const statusEl = document.getElementById('fileStatus');
+  const mkt = activeMarket;
+  const files = DRIVE_FILES_BY_MARKET[mkt];
   try{
-    statusEl.textContent = 'Loading from Drive...';
+    statusEl.textContent = 'Loading '+mkt.toUpperCase()+' from Drive...';
     const folderId = await driveGetFolderId(DRIVE_LIVE_FOLDER_NAME);
 
     const [bpId, trId, pwId, stId] = await Promise.all([
-      driveGetFileId(folderId, DRIVE_FILES.bp),
-      driveGetFileId(folderId, DRIVE_FILES.tr),
-      driveGetFileId(folderId, DRIVE_FILES.pw),
-      driveGetFileId(folderId, DRIVE_FILES.st),
+      driveGetFileId(folderId, files.bp),
+      driveGetFileId(folderId, files.tr),
+      driveGetFileId(folderId, files.pw),
+      driveGetFileId(folderId, files.st),
     ]);
 
     const [bpRows, trRows, pwRows, stRows] = await Promise.all([
       driveReadRows(bpId),
       driveReadRows(trId),
-      driveReadRows(pwId, 'date'),
+      driveReadRows(pwId, mkt==='nifty' ? 'date' : undefined),
       driveReadRows(stId),
     ]);
 
     const nd = transformBP(bpRows);
     nd.trend = transformTrend(trRows);
-    nd.eod = { pwoi: transformPWOI(pwRows), stats: transformStats(stRows) };
+    nd.eod = mkt==='nifty'
+      ? { pwoi: transformPWOI(pwRows), stats: transformStats(stRows) }
+      : { pwoi: transformBseOi(pwRows), stats: transformBseFiiStats(stRows) };
     nd.src = 'Google Drive';
+
+    if(mkt==='nifty'){ dataNifty = nd; } else { dataSensex = nd; }
     DATA = nd;
-    try{ localStorage.setItem('bpmf_v1', JSON.stringify(DATA)); }catch(e){}
+    try{ localStorage.setItem('bpmf_v1_'+mkt, JSON.stringify(DATA)); }catch(e){}
     initAll();
-    statusEl.textContent = 'Data: Google Drive • loaded ' + new Date().toLocaleTimeString();
+    statusEl.textContent = 'Data: Google Drive ('+mkt.toUpperCase()+') • loaded ' + new Date().toLocaleTimeString();
   }catch(err){
     statusEl.textContent = 'Drive load failed';
-    alert('Could not load from Drive: ' + err.message);
+    alert('Could not load '+mkt.toUpperCase()+' from Drive: ' + err.message);
   }
 }
 
@@ -831,7 +966,6 @@ document.getElementById('driveBtn').onclick = () => {
   driveInitTokenClient();
   driveTokenClient.requestAccessToken({ prompt: driveAccessToken ? '' : 'consent' });
 };
-
 /* ---------- init ---------- */
 function initAll(){
   stopReplay(); eodDate=null;
