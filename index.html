@@ -631,7 +631,7 @@ function renderEOD(){
     pane.innerHTML='<div class="subnote">No EOD data loaded. Use “Load new files” to add the fii_pwoi and fii_stats excels.</div>';return;
   }
   const pw=eod.pwoi, st=eod.stats;
-  let html='<div class="hdr"><h1>Participant-wise Index Options — OI Change</h1>';
+  let html='<div class="hdr"><h1>'+activeMarket.toUpperCase()+' — Participant-wise Index Options — OI Change</h1>';
   if(pw){
     if(!eodDate||!pw.rows[eodDate]){
       // default: MF chart date if present, else latest
@@ -700,7 +700,7 @@ function renderEOD(){
     }
   }
   if(st){
-    html+='<h1 style="font-size:18px;margin:18px 0 8px">FII — NIFTY Options (EOD stats)</h1>';
+    html+='<h1 style="font-size:18px;margin:18px 0 8px">FII — '+activeMarket.toUpperCase()+' Options (EOD stats)</h1>';
     html+='<table style="width:100%;border-collapse:collapse;font-size:13.5px">'+
       '<tr style="color:var(--muted);text-align:right"><th style="text-align:left;padding:6px">Date</th><th>Net contracts</th><th>Δ Contracts</th><th>Holding</th><th>Avg buy strike</th><th>Avg sell strike</th><th>Δ Position ₹Cr</th></tr>';
     st.dates.slice(0,8).forEach(d=>{
