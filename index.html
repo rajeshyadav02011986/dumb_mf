@@ -515,7 +515,7 @@ function transformStats(rows){
   const byDate={};
   rows.forEach(r=>{
     if(String(r.Category||'').trim()!=='NIFTY OPTIONS')return;
-    const d=xlD(r.date); if(!d)return;
+    const d=xlD(r.Date); if(!d)return;
     byDate[isoD(d)]={net:+r.net_contracts||0, cDiff:+r.Contracts_diff||0,
       avgB:Math.round(+r['average_buy_strike price']||0), avgS:Math.round(+r['average_sell_strike price']||0),
       hold:+r['No._of_Contracts_holding']||0, posDiff:Math.round(+r.Position_diff||0)};
